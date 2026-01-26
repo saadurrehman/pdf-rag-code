@@ -1,9 +1,34 @@
+import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { QdrantVectorStore } from '@langchain/qdrant';
 import { Document } from '@langchain/core/documents';
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { CharacterTextSplitter } from '@langchain/textsplitters';
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+
+// Parse Redis URL if provided, otherwise use localhost
+function getRedisConnection() {
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    try {
+      const url = new URL(redisUrl);
+      return {
+        host: url.hostname,
+        port: parseInt(url.port) || 6379,
+        password: url.password || undefined,
+        username: url.username || undefined,
+      };
+    } catch (error) {
+      console.warn('Failed to parse REDIS_URL, using default:', error.message);
+    }
+  }
+  return {
+    host: 'localhost',
+    port: 6379,
+  };
+}
 
 const worker = new Worker(
   'file-upload-queue',
@@ -24,7 +49,7 @@ const worker = new Worker(
 
     const embeddings = new OpenAIEmbeddings({
       model: 'text-embedding-3-small',
-      apiKey: '',
+      apiKey: OPENAI_API_KEY,
     });
 
     const vectorStore = await QdrantVectorStore.fromExistingCollection(
@@ -39,9 +64,6 @@ const worker = new Worker(
   },
   {
     concurrency: 100,
-    connection: {
-      host: 'localhost',
-      port: '6379',
-    },
+    connection: getRedisConnection(),
   }
 );

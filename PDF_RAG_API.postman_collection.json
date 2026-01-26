@@ -1,0 +1,208 @@
+{
+	"info": {
+		"_postman_id": "pdf-rag-api-collection",
+		"name": "PDF RAG API",
+		"description": "Complete API collection for PDF RAG application testing",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"item": [
+				{
+					"name": "Root Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								""
+							]
+						},
+						"description": "Basic health check endpoint"
+					},
+					"response": []
+				},
+				{
+					"name": "Detailed Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/health",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"health"
+							]
+						},
+						"description": "Detailed health check with status message"
+					},
+					"response": []
+				}
+			],
+			"description": "Health check endpoints"
+		},
+		{
+			"name": "File Upload",
+			"item": [
+				{
+					"name": "Upload PDF",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "pdf",
+									"type": "file",
+									"src": [],
+									"description": "PDF file to upload"
+								}
+							]
+						},
+						"url": {
+							"raw": "http://localhost:8000/upload/pdf",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"upload",
+								"pdf"
+							]
+						},
+						"description": "Upload a PDF file for processing"
+					},
+					"response": []
+				}
+			],
+			"description": "PDF file upload endpoints"
+		},
+		{
+			"name": "Chat",
+			"item": [
+				{
+					"name": "Simple Chat",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/chat?message=Hello",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"chat"
+							],
+							"query": [
+								{
+									"key": "message",
+									"value": "Hello",
+									"description": "User's question or message"
+								}
+							]
+						},
+						"description": "Send a simple chat message"
+					},
+					"response": []
+				},
+				{
+					"name": "Ask About PDF",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/chat?message=What%20is%20the%20main%20topic%20of%20the%20uploaded%20PDF?",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"chat"
+							],
+							"query": [
+								{
+									"key": "message",
+									"value": "What is the main topic of the uploaded PDF?",
+									"description": "Question about uploaded PDF"
+								}
+							]
+						},
+						"description": "Ask a question about the uploaded PDF document"
+					},
+					"response": []
+				},
+				{
+					"name": "Summarize Document",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/chat?message=Summarize%20the%20document",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"chat"
+							],
+							"query": [
+								{
+									"key": "message",
+									"value": "Summarize the document",
+									"description": "Request document summary"
+								}
+							]
+						},
+						"description": "Get a summary of the uploaded document"
+					},
+					"response": []
+				},
+				{
+					"name": "Chat - Error Test (No Message)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/chat",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"chat"
+							]
+						},
+						"description": "Test error handling when message parameter is missing"
+					},
+					"response": []
+				}
+			],
+			"description": "Chat endpoints for AI interactions"
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		}
+	]
+}
