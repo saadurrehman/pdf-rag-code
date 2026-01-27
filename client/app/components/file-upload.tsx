@@ -1,59 +1,66 @@
 'use client';
 import * as React from 'react';
-import { Upload, FileCheck, AlertCircle, Loader2, Zap } from 'lucide-react';
+import { Upload, FileCheck, AlertCircle, Loader2, Zap, ExternalLink } from 'lucide-react';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 const FileUploadComponent: React.FC = () => {
   const [uploading, setUploading] = React.useState(false);
   const [uploadStatus, setUploadStatus] = React.useState<'idle' | 'success' | 'error'>('idle');
   const [statusMessage, setStatusMessage] = React.useState<string>('');
   const [fileName, setFileName] = React.useState<string>('');
+  const [uploadedUrl, setUploadedUrl] = React.useState<string | null>(null);
 
   const handleFileUploadButtonClick = () => {
     const el = document.createElement('input');
     el.setAttribute('type', 'file');
     el.setAttribute('accept', 'application/pdf');
-    el.addEventListener('change', async (ev) => {
+    el.addEventListener('change', async () => {
       if (el.files && el.files.length > 0) {
         const file = el.files.item(0);
         if (file) {
           setUploading(true);
           setFileName(file.name);
           setUploadStatus('idle');
-          setStatusMessage('Processing your document...');
-          
+          setStatusMessage('');
+          setUploadedUrl(null);
+
           try {
             const formData = new FormData();
             formData.append('pdf', file);
 
-            const res = await fetch('http://localhost:8000/api/upload/pdf', {
+            const res = await fetch(`${API_BASE}/api/upload-pdf`, {
               method: 'POST',
               body: formData,
             });
 
+            const data = await res.json().catch(() => ({}));
+
             if (!res.ok) {
-              throw new Error('Upload failed');
+              throw new Error(data.message || data.error || 'Upload failed');
             }
 
-            const data = await res.json();
+            const url = data.url ?? null;
             setUploadStatus('success');
             setStatusMessage('Document uploaded successfully!');
-            console.log('File uploaded:', data);
-            
-            // Clear status after 4 seconds
+            setUploadedUrl(url);
+
             setTimeout(() => {
               setUploadStatus('idle');
               setStatusMessage('');
               setFileName('');
-            }, 4000);
+              setUploadedUrl(null);
+            }, 8000);
           } catch (error) {
             console.error('Upload error:', error);
             setUploadStatus('error');
-            setStatusMessage('Upload failed. Please try again.');
+            setStatusMessage(error instanceof Error ? error.message : 'Upload failed. Please try again.');
+            setUploadedUrl(null);
             setTimeout(() => {
               setUploadStatus('idle');
               setStatusMessage('');
               setFileName('');
-            }, 4000);
+            }, 5000);
           } finally {
             setUploading(false);
           }
@@ -118,6 +125,18 @@ const FileUploadComponent: React.FC = () => {
                 }`}>
                   {statusMessage}
                 </p>
+              )}
+
+              {uploadStatus === 'success' && uploadedUrl && (
+                <a
+                  href={uploadedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 font-mono bg-slate-900/70 px-3 py-2 rounded-lg border border-slate-700/50 truncate max-w-full"
+                >
+                  <ExternalLink className="w-4 h-4 flex-shrink-0" />
+                  <span className="truncate">{uploadedUrl}</span>
+                </a>
               )}
               
               {!uploading && uploadStatus === 'idle' && !statusMessage && (

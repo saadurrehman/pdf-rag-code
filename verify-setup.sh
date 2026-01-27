@@ -206,6 +206,3 @@ else
 fi
 
 echo ""
-echo "For detailed setup instructions, see: SETUP_GUIDE.md"
-echo "For error handling help, see: ERROR_HANDLING_GUIDE.md"
-echo ""

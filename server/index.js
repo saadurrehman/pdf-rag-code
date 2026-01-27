@@ -1,15 +1,20 @@
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { tmpdir } from 'os';
+import { writeFileSync } from 'fs';
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { Queue } from 'bullmq';
+import uploadFile, { uploadFromBuffer, isS3Configured } from './utils/uploadFile.js';
+import getS3 from './utils/s3Client.js';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { QdrantVectorStore } from '@langchain/qdrant';
 import OpenAI from 'openai';
 
-// Load .env file from server directory
+// 1. Load .env first (server/.env). Never commit .env — it's in .gitignore.
+//    Required for S3: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET, AWS_REGION (optional).
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '.env') });
@@ -59,6 +64,11 @@ try {
   };
 }
 
+// Memory storage: no file written to project folder; buffer goes straight to S3
+const memoryStorage = multer.memoryStorage();
+const uploadMemory = multer({ storage: memoryStorage });
+
+// Disk storage kept only for any route that needs a local path (e.g. worker); S3 routes use memory
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, 'uploads/');
@@ -68,8 +78,35 @@ const storage = multer.diskStorage({
     cb(null, `${uniqueSuffix}-${file.originalname}`);
   },
 });
+const upload = multer({ storage });
 
-const upload = multer({ storage: storage });
+// Wraps memory multer for S3-only PDF — no file written to project folder
+function multerUploadPdf(req, res, next) {
+  uploadMemory.single('pdf')(req, res, (err) => {
+    if (err) {
+      const isMulter = err.code && /^LIMIT_/.test(err.code);
+      return res.status(isMulter ? 400 : 500).json({
+        error: 'File upload error',
+        message: err.message || 'Upload failed',
+      });
+    }
+    next();
+  });
+}
+
+// Wraps memory multer for S3-only file — no file written to project folder
+function multerUploadFile(req, res, next) {
+  uploadMemory.single('file')(req, res, (err) => {
+    if (err) {
+      const isMulter = err.code && /^LIMIT_/.test(err.code);
+      return res.status(isMulter ? 400 : 500).json({
+        error: 'File upload error',
+        message: err.message || 'Upload failed',
+      });
+    }
+    next();
+  });
+}
 
 const app = express();
 app.use(cors());
@@ -94,32 +131,126 @@ app.get('/health', (req, res) => {
 // API ROUTES (All under /api prefix)
 // ============================================
 
-// Upload PDF endpoint
-app.post('/api/upload/pdf', upload.single('pdf'), async (req, res) => {
+// --- S3 example routes (use credentials from .env; never log or expose keys) ---
+
+// GET /api/s3/buckets — list buckets (example: AWS credentials from .env)
+app.get('/api/s3/buckets', async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return res.status(503).json({
+        error: 'S3 not configured',
+        message: 'Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_S3_BUCKET in server/.env',
+      });
+    }
+    const s3 = getS3();
+    const data = await s3.listBuckets().promise();
+    const names = (data.Buckets || []).map((b) => b.Name);
+    return res.json({ buckets: names });
+  } catch (err) {
+    // Safe logging: no credentials or full error objects
+    console.error('[S3] listBuckets error:', err.code || err.name, err.message);
+    return res.status(500).json({
+      error: 'Failed to list buckets',
+      message: err.message || 'S3 error',
+    });
+  }
+});
+
+// POST /api/upload — multipart form field "file", uploads to S3 via uploadFile (v2 client)
+app.post('/api/upload', multerUploadFile, async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'No file uploaded',
+        message: 'Send a file in multipart/form-data under the field name "file".',
+      });
+    }
+    const s3Path = await uploadFromBuffer(req.file.buffer, `uploads/${req.file.originalname}`);
+    return res.json({ message: 'File uploaded to S3', url: s3Path });
+  } catch (err) {
+    console.error('POST /api/upload error:', err);
+    return res.status(500).json({ error: err.message || 'Upload failed' });
+  }
+});
+
+// POST /api/upload-pdf — multipart/form-data, multer, S3 upload, returns file URL
+app.post('/api/upload-pdf', multerUploadPdf, async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'No file uploaded',
+        message: 'Send a PDF file in multipart/form-data under the field name "pdf".',
+      });
+    }
+    const mimetype = (req.file.mimetype || '').toLowerCase();
+    if (mimetype !== 'application/pdf') {
+      return res.status(400).json({
+        error: 'Invalid file type',
+        message: 'Only PDF files are accepted.',
+        received: req.file.mimetype || 'unknown',
+      });
+    }
+    if (!isS3Configured()) {
+      return res.status(503).json({
+        error: 'S3 not configured',
+        message: 'File storage is not available. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_S3_BUCKET in server/.env',
+      });
+    }
+    const key = `pdfs/${Date.now()}-${req.file.originalname}`;
+    const url = await uploadFromBuffer(req.file.buffer, key, 'application/pdf');
+    return res.status(200).json({ url });
+  } catch (err) {
+    console.error('POST /api/upload-pdf error:', err);
+    return res.status(500).json({
+      error: 'Upload failed',
+      message: err.message || 'An unexpected error occurred',
+    });
+  }
+});
+
+// Upload PDF endpoint — buffer only; uploads to S3, worker gets temp file path (not project folder)
+app.post('/api/upload/pdf', uploadMemory.single('pdf'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
+    const key = `pdfs/${Date.now()}-${req.file.originalname}`;
+    let url = null;
+    if (isS3Configured()) {
+      try {
+        url = await uploadFromBuffer(req.file.buffer, key, 'application/pdf');
+      } catch (s3Error) {
+        console.error('S3 upload error:', s3Error);
+        return res.status(500).json({
+          error: 'Failed to upload file to S3',
+          message: s3Error.message || 'S3 upload failed',
+          details: 'Check server logs and AWS credentials in .env',
+        });
+      }
+    }
+    // Worker needs a file path: write buffer to system temp dir (not project folder), then enqueue
+    const tempPath = join(tmpdir(), `pdf-rag-${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+    writeFileSync(tempPath, req.file.buffer);
     try {
       await queue.add(
         'file-ready',
         JSON.stringify({
           filename: req.file.originalname,
-          destination: req.file.destination,
-          path: req.file.path,
+          destination: tmpdir(),
+          path: tempPath,
         })
       );
     } catch (queueError) {
       console.warn('Queue error (continuing anyway):', queueError.message);
-      // Continue even if queue fails
     }
-    return res.json({ message: 'uploaded' });
+
+    return res.json(url ? { message: 'uploaded', url } : { message: 'uploaded' });
   } catch (error) {
     console.error('Upload error:', error);
-    return res.status(500).json({ 
+    return res.status(500).json({
       error: 'Failed to upload file',
       message: error.message || 'Unknown error',
-      details: 'Check server logs for more information'
+      details: 'Check server logs for more information',
     });
   }
 });
@@ -467,8 +598,17 @@ process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
 });
 
-app.listen(8000, () => {
-  console.log(`Server started on PORT:${8000}`);
+const PORT = Number(process.env.PORT) || 8000;
+const server = app.listen(PORT, () => {
+  console.log(`Server started on PORT:${PORT}`);
   console.log(`OpenAI API Key: ${OPENAI_API_KEY ? 'Loaded (' + OPENAI_API_KEY.substring(0, 15) + '...)' : 'NOT FOUND'}`);
   console.log(`Redis URL: ${process.env.REDIS_URL ? 'Configured' : 'Using localhost'}`);
+});
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is in use. Free it with: lsof -ti:${PORT} | xargs kill -9`);
+    console.error(`Or run on another port: PORT=${PORT + 1} pnpm run dev`);
+    process.exit(1);
+  }
+  throw err;
 });
