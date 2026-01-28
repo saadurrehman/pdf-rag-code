@@ -7,10 +7,11 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { Queue } from 'bullmq';
-import uploadFile, { uploadFromBuffer, isS3Configured } from './utils/uploadFile.js';
+import { uploadFromBuffer, isS3Configured } from './utils/uploadFile.js';
 import getS3 from './utils/s3Client.js';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { QdrantVectorStore } from '@langchain/qdrant';
+import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import OpenAI from 'openai';
 
 // 1. Load .env first (server/.env). Never commit .env — it's in .gitignore.
@@ -49,19 +50,131 @@ const client = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 let queue;
+let queueAvailable = false;
 try {
   queue = new Queue('file-upload-queue', {
     connection: getRedisConnection(),
   });
+  queueAvailable = true;
   console.log('Redis queue initialized successfully');
 } catch (queueError) {
   console.error('Failed to initialize Redis queue:', queueError.message);
-  // Create a mock queue that logs errors instead of failing
   queue = {
     add: async () => {
       console.warn('Redis queue not available, file upload queuing skipped');
     }
   };
+}
+
+const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
+const QDRANT_COLLECTION = 'langchainjs-testing';
+
+// Get ALL document chunks from Qdrant via scroll (used when semantic search returns nothing so we still pass the full doc)
+async function getFullDocumentFromQdrant() {
+  const docs = [];
+  let offset = undefined;
+  do {
+    const body = { limit: 100, with_payload: true, with_vector: false };
+    if (offset !== undefined) body.offset = offset;
+    const scrollRes = await fetch(`${QDRANT_URL}/collections/${QDRANT_COLLECTION}/points/scroll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!scrollRes.ok) return [];
+    const scrollData = await scrollRes.json();
+    const points = scrollData.result?.points ?? [];
+    for (const p of points) {
+      const payload = p.payload || {};
+      // LangChain Qdrant stores doc content in payload; try common keys
+      let text = payload.content ?? payload.pageContent ?? payload.text;
+      if (typeof text !== 'string' && payload.metadata && typeof payload.metadata.content === 'string') text = payload.metadata.content;
+      if (typeof text !== 'string') {
+        for (const v of Object.values(payload)) {
+          if (typeof v === 'string' && v.length > 10) { text = v; break; }
+        }
+      }
+      if (typeof text !== 'string') text = JSON.stringify(payload);
+      if (text && String(text).trim()) docs.push({ pageContent: String(text).trim() });
+    }
+    offset = scrollData.result?.next_page_offset ?? null;
+  } while (offset !== undefined && offset !== null);
+  return docs;
+}
+
+// Clear all points in the Qdrant collection so only the latest uploaded document is used
+async function clearQdrantCollection() {
+  try {
+    let allIds = [];
+    let offset = undefined;
+    do {
+      const body = { limit: 100, with_payload: false, with_vector: false };
+      if (offset !== undefined) body.offset = offset;
+      const scrollRes = await fetch(`${QDRANT_URL}/collections/${QDRANT_COLLECTION}/points/scroll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!scrollRes.ok) {
+        const err = await scrollRes.text();
+        throw new Error(`Qdrant scroll failed: ${scrollRes.status} ${err}`);
+      }
+      const scrollData = await scrollRes.json();
+      const points = scrollData.result?.points ?? [];
+      const ids = points.map((p) => p.id);
+      allIds = allIds.concat(ids);
+      offset = scrollData.result?.next_page_offset ?? null;
+    } while (offset !== undefined && offset !== null);
+    if (allIds.length === 0) {
+      console.log('Qdrant collection already empty');
+      return;
+    }
+    const deleteRes = await fetch(`${QDRANT_URL}/collections/${QDRANT_COLLECTION}/points/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: allIds }),
+    });
+    if (!deleteRes.ok) {
+      const err = await deleteRes.text();
+      throw new Error(`Qdrant delete failed: ${deleteRes.status} ${err}`);
+    }
+    console.log('Qdrant collection cleared:', allIds.length, 'points removed');
+  } catch (err) {
+    if (err.message?.includes('404') || err.message?.includes('Not found')) {
+      console.log('Qdrant collection does not exist yet, skip clear');
+      return;
+    }
+    throw err;
+  }
+}
+
+// Ingest PDF into Qdrant so the chatbot can read it (used when worker/Redis not available)
+async function ingestPdfToQdrant(tempPath) {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OpenAI API key missing');
+  }
+  try {
+    await clearQdrantCollection();
+    const loader = new PDFLoader(tempPath);
+    const docs = await loader.load();
+    if (!docs.length) {
+      console.warn('PDF produced no text, ingestion skipped');
+      return;
+    }
+    const embeddings = new OpenAIEmbeddings({
+      model: 'text-embedding-3-small',
+      apiKey: OPENAI_API_KEY,
+    });
+    const vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
+      url: QDRANT_URL,
+      collectionName: QDRANT_COLLECTION,
+    });
+    await vectorStore.addDocuments(docs);
+    console.log('PDF ingested into Qdrant (inline):', docs.length, 'chunks');
+  } catch (err) {
+    console.error('Inline PDF ingestion failed:', err.message);
+    throw err;
+  }
 }
 
 // Memory storage: no file written to project folder; buffer goes straight to S3
@@ -78,7 +191,8 @@ const storage = multer.diskStorage({
     cb(null, `${uniqueSuffix}-${file.originalname}`);
   },
 });
-const upload = multer({ storage });
+const _upload = multer({ storage });
+void _upload;
 
 // Wraps memory multer for S3-only PDF — no file written to project folder
 function multerUploadPdf(req, res, next) {
@@ -173,7 +287,7 @@ app.post('/api/upload', multerUploadFile, async (req, res) => {
   }
 });
 
-// POST /api/upload-pdf — multipart/form-data, multer, S3 upload, returns file URL
+// POST /api/upload-pdf — multipart/form-data, S3 (if configured) + enqueue for Qdrant ingestion so chatbot can read the report
 app.post('/api/upload-pdf', multerUploadPdf, async (req, res) => {
   try {
     if (!req.file) {
@@ -190,15 +304,43 @@ app.post('/api/upload-pdf', multerUploadPdf, async (req, res) => {
         received: req.file.mimetype || 'unknown',
       });
     }
-    if (!isS3Configured()) {
-      return res.status(503).json({
-        error: 'S3 not configured',
-        message: 'File storage is not available. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_S3_BUCKET in server/.env',
+
+    let url = null;
+    if (isS3Configured()) {
+      try {
+        const key = `pdfs/${Date.now()}-${req.file.originalname}`;
+        url = await uploadFromBuffer(req.file.buffer, key, 'application/pdf');
+      } catch (s3Err) {
+        console.error('S3 upload error:', s3Err);
+        return res.status(500).json({
+          error: 'Failed to upload file to S3',
+          message: s3Err.message || 'S3 upload failed',
+        });
+      }
+    }
+
+    // Always clear + ingest into Qdrant in this request so the chatbot immediately reads the NEW document (not old)
+    const tempPath = join(tmpdir(), `pdf-rag-${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+    writeFileSync(tempPath, req.file.buffer);
+    try {
+      await ingestPdfToQdrant(tempPath);
+      console.log('PDF ingested (new document is now active for chat):', req.file.originalname);
+    } catch (ingestErr) {
+      console.error('Ingestion failed:', ingestErr.message);
+      return res.status(500).json({
+        error: 'Upload succeeded but report could not be processed for chat',
+        message: 'Qdrant or OpenAI may be unavailable. Start Qdrant (e.g. docker run -p 6333:6333 qdrant/qdrant) and ensure OPENAI_API_KEY is set.',
       });
     }
-    const key = `pdfs/${Date.now()}-${req.file.originalname}`;
-    const url = await uploadFromBuffer(req.file.buffer, key, 'application/pdf');
-    return res.status(200).json({ url });
+    if (queueAvailable) {
+      try {
+        await queue.add('file-ready', JSON.stringify({ filename: req.file.originalname, destination: tmpdir(), path: tempPath }));
+      } catch (err) {
+        console.warn('Queue add failed (non-fatal):', err?.message ?? err);
+      }
+    }
+
+    return res.status(200).json({ url, message: 'uploaded', ingested: true });
   } catch (err) {
     console.error('POST /api/upload-pdf error:', err);
     return res.status(500).json({
@@ -265,6 +407,9 @@ app.get('/api/chat', async (req, res) => {
 
   try {
     const userQuery = req.query.message;
+    const botRaw = (req.query.bot || 'dentist').toLowerCase();
+    const allowedBots = ['dentist', 'physiotherapist', 'nutrition'];
+    const bot = allowedBots.includes(botRaw) ? botRaw : 'dentist';
 
     // Validate message parameter
     if (!userQuery || typeof userQuery !== 'string') {
@@ -288,12 +433,12 @@ app.get('/api/chat', async (req, res) => {
 
     console.log('✓ Validation passed, processing query...');
 
-    // Step 1: Retrieve relevant context from vector store
+    // Step 1: Retrieve document context — use semantic search, then fallback to FULL document if nothing found
     let result = [];
     let qdrantStatus = 'not_attempted';
     
     try {
-      console.log('🔍 Attempting to retrieve PDF context from Qdrant...');
+      console.log('🔍 Retrieving PDF context from Qdrant...');
       const embeddings = new OpenAIEmbeddings({
         model: 'text-embedding-3-small',
         apiKey: OPENAI_API_KEY,
@@ -301,49 +446,114 @@ app.get('/api/chat', async (req, res) => {
       
       const vectorStore = await QdrantVectorStore.fromExistingCollection(
         embeddings,
-        {
-          url: 'http://localhost:6333',
-          collectionName: 'langchainjs-testing',
-        }
+        { url: QDRANT_URL, collectionName: QDRANT_COLLECTION }
       );
       
-      const ret = vectorStore.asRetriever({
-        k: 2,
-      });
-      
-      result = await ret.invoke(userQuery);
+      const askingForPatientInfo = /\b(patient\s+(information|details|name|gender|age|info)|from\s+(the\s+)?document|what('s| is)\s+in\s+(the\s+)?document|provide\s+(me\s+)?patient|document\s+details)\b/i.test(userQuery);
+      if (askingForPatientInfo) {
+        // User wants patient info — get the ENTIRE document via scroll so we never miss name/gender/etc.
+        result = await getFullDocumentFromQdrant();
+        if (result.length > 0) console.log('✓ Using full document for patient-info query:', result.length, 'chunks');
+      }
+      if (result.length === 0) {
+        const ret = vectorStore.asRetriever({ k: 50 });
+        const fromQuery = await ret.invoke(userQuery);
+        const demographicQuery = 'patient name gender age date of birth demographics identification medical record';
+        const fromDemographics = await ret.invoke(demographicQuery);
+        const seen = new Set();
+        const merged = [];
+        for (const doc of [...fromQuery, ...fromDemographics]) {
+          const content = (doc.pageContent || doc.content || String(doc)).trim();
+          if (!content || seen.has(content)) continue;
+          seen.add(content);
+          merged.push(doc);
+        }
+        result = merged;
+        if (result.length === 0) {
+          const fullDocs = await getFullDocumentFromQdrant();
+          if (fullDocs.length > 0) {
+            result = fullDocs;
+            console.log('✓ Using full document from Qdrant (scroll fallback):', result.length, 'chunks');
+          }
+        } else {
+          console.log('✓ Retrieved', result.length, 'chunks from Qdrant');
+        }
+      }
       qdrantStatus = 'success';
-      console.log(`✓ Retrieved ${result.length} relevant document chunks from Qdrant`);
-      
     } catch (qdrantError) {
       qdrantStatus = 'failed';
-      console.warn('⚠️  Qdrant connection failed, continuing without PDF context');
-      console.warn('Qdrant error details:', {
-        message: qdrantError.message,
-        code: qdrantError.code,
-        stack: qdrantError.stack?.split('\n')[0]
-      });
-      
-      // Check specific Qdrant errors
-      if (qdrantError.message?.includes('ECONNREFUSED')) {
-        console.warn('💡 Hint: Qdrant service might not be running. Run: docker-compose up -d');
-      } else if (qdrantError.message?.includes('Not found')) {
-        console.warn('💡 Hint: Collection "langchainjs-testing" might not exist. Create it first.');
+      console.warn('⚠️  Qdrant failed, trying scroll fallback...', qdrantError.message);
+      try {
+        const fullDocs = await getFullDocumentFromQdrant();
+        if (fullDocs.length > 0) {
+          result = fullDocs;
+          qdrantStatus = 'success';
+          console.log('✓ Got full document via scroll:', result.length, 'chunks');
+        }
+      } catch (scrollErr) {
+        console.warn('Scroll fallback failed:', scrollErr.message);
       }
-      
-      // Continue without vector store results
+      if (result.length === 0 && qdrantError.message?.includes('ECONNREFUSED')) {
+        console.warn('💡 Hint: Start Qdrant (e.g. docker run -p 6333:6333 qdrant/qdrant)');
+      }
     }
 
-    // Step 2: Prepare system prompt based on available context
-    const SYSTEM_PROMPT = result.length > 0
-      ? `You are a helpful AI Assistant who answers the user query based on the available context from PDF File.
-  Context:
-  ${JSON.stringify(result)}`
-      : `You are a helpful AI Assistant. Answer the user's query.`;
+    // Step 2: Format PDF context as readable text (extract pageContent from each chunk)
+    const contextText = result.length > 0
+      ? result
+          .map((doc, i) => `[Section ${i + 1}]\n${(doc.pageContent || doc.content || String(doc)).trim()}`)
+          .join('\n\n')
+      : '';
 
-    console.log(`🤖 Calling OpenAI API with ${result.length > 0 ? 'PDF context' : 'no context'}...`);
+    // Step 3: Decide whether the user is asking "from the document" vs a general question.
+    // - Document-specific: answer ONLY from the uploaded document.
+    // - General: answer from the bot's expertise; use the document only if relevant.
+    const askingFromDocument =
+      /\b(from\s+(the\s+)?document|in\s+(the\s+)?document|based\s+on\s+(the\s+)?document|according\s+to\s+(the\s+)?document|patient\s+(information|details|name|gender|age|dob)|what('s| is)\s+in\s+(the\s+)?document)\b/i.test(
+        userQuery
+      );
 
-    // Step 3: Set up streaming response headers
+    const strictDocumentBlock =
+      askingFromDocument && contextText
+        ? `CRITICAL RULES — you MUST follow these:
+1. The text between "--- START OF USER'S UPLOADED DOCUMENT ---" and "--- END OF USER'S UPLOADED DOCUMENT ---" is the ONLY document the user shared.
+2. For this request, answer ONLY from that text. Do not use training data or other sources.
+3. If a specific fact is not present in the text, say: "That is not mentioned in the document you shared."
+
+--- START OF USER'S UPLOADED DOCUMENT ---
+${contextText}
+--- END OF USER'S UPLOADED DOCUMENT ---`
+        : '';
+
+    const optionalDocumentNote =
+      !askingFromDocument && contextText
+        ? `Optional document context (use only if relevant to the user's question):
+${contextText}`
+        : '';
+
+    const botPersonas = {
+      dentist: `You are a dentist AI assistant. Stay within dentistry: oral health, teeth, gums, dental procedures, hygiene, and related advice.
+${strictDocumentBlock || ''}
+${optionalDocumentNote ? `\n\n${optionalDocumentNote}` : ''}
+
+If the user asks a general question not tied to the document, answer from your professional knowledge. If the user asks for patient details or says "from the document", extract it from the document text above.`,
+      physiotherapist: `You are a physiotherapist AI assistant. Stay within physiotherapy: movement, posture, rehabilitation, muscle/joint care, exercises, pain management, and when to refer out.
+${strictDocumentBlock || ''}
+${optionalDocumentNote ? `\n\n${optionalDocumentNote}` : ''}
+
+If the user asks a general question (e.g., arthritis types), answer from your professional knowledge. If the user asks for patient details or says "from the document", extract it from the document text above.`,
+      nutrition: `You are a nutrition doctor / dietitian AI assistant. Stay within nutrition: diet, nutrients, meal planning, weight management, and food-related health guidance.
+${strictDocumentBlock || ''}
+${optionalDocumentNote ? `\n\n${optionalDocumentNote}` : ''}
+
+If the user asks a general question, answer from your professional knowledge. If the user asks for patient details or says "from the document", extract it from the document text above.`,
+    };
+
+    const SYSTEM_PROMPT = botPersonas[bot];
+
+    console.log(`🤖 Calling OpenAI API [bot=${bot}] with ${result.length > 0 ? 'PDF context' : 'no context'}...`);
+
+    // Step 4: Set up streaming response headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -351,7 +561,7 @@ app.get('/api/chat', async (req, res) => {
     // Send initial metadata
     res.write(`data: ${JSON.stringify({ type: 'metadata', docs: result, qdrantStatus })}\n\n`);
 
-    // Step 4: Call OpenAI API with streaming
+    // Step 5: Call OpenAI API with streaming
     try {
       const stream = await client.chat.completions.create({
         model: 'gpt-4o-mini',

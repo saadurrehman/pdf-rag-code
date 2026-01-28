@@ -2,11 +2,57 @@ import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { QdrantVectorStore } from '@langchain/qdrant';
-import { Document } from '@langchain/core/documents';
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
-import { CharacterTextSplitter } from '@langchain/textsplitters';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
+const QDRANT_COLLECTION = 'langchainjs-testing';
+
+// Clear all points so only the latest uploaded document is used by the chatbot
+async function clearQdrantCollection() {
+  try {
+    let allIds = [];
+    let offset = undefined;
+    do {
+      const body = { limit: 100, with_payload: false, with_vector: false };
+      if (offset !== undefined) body.offset = offset;
+      const scrollRes = await fetch(`${QDRANT_URL}/collections/${QDRANT_COLLECTION}/points/scroll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!scrollRes.ok) {
+        const err = await scrollRes.text();
+        throw new Error(`Qdrant scroll failed: ${scrollRes.status} ${err}`);
+      }
+      const scrollData = await scrollRes.json();
+      const points = scrollData.result?.points ?? [];
+      const ids = points.map((p) => p.id);
+      allIds = allIds.concat(ids);
+      offset = scrollData.result?.next_page_offset ?? null;
+    } while (offset !== undefined && offset !== null);
+    if (allIds.length === 0) {
+      console.log('Qdrant collection already empty');
+      return;
+    }
+    const deleteRes = await fetch(`${QDRANT_URL}/collections/${QDRANT_COLLECTION}/points/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: allIds }),
+    });
+    if (!deleteRes.ok) {
+      const err = await deleteRes.text();
+      throw new Error(`Qdrant delete failed: ${deleteRes.status} ${err}`);
+    }
+    console.log('Qdrant collection cleared:', allIds.length, 'points removed');
+  } catch (err) {
+    if (err.message?.includes('404') || err.message?.includes('Not found')) {
+      console.log('Qdrant collection does not exist yet, skip clear');
+      return;
+    }
+    throw err;
+  }
+}
 
 // Parse Redis URL if provided, otherwise use localhost
 function getRedisConnection() {
@@ -30,7 +76,7 @@ function getRedisConnection() {
   };
 }
 
-const worker = new Worker(
+const _worker = new Worker(
   'file-upload-queue',
   async (job) => {
     console.log(`Job:`, job.data);
@@ -47,6 +93,8 @@ const worker = new Worker(
     const loader = new PDFLoader(data.path);
     const docs = await loader.load();
 
+    await clearQdrantCollection();
+
     const embeddings = new OpenAIEmbeddings({
       model: 'text-embedding-3-small',
       apiKey: OPENAI_API_KEY,
@@ -55,8 +103,8 @@ const worker = new Worker(
     const vectorStore = await QdrantVectorStore.fromExistingCollection(
       embeddings,
       {
-        url: 'http://localhost:6333',
-        collectionName: 'langchainjs-testing',
+        url: QDRANT_URL,
+        collectionName: QDRANT_COLLECTION,
       }
     );
     await vectorStore.addDocuments(docs);
@@ -67,3 +115,4 @@ const worker = new Worker(
     connection: getRedisConnection(),
   }
 );
+void _worker;

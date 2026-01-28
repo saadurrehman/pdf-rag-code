@@ -120,22 +120,22 @@
     @apply bg-background text-foreground;
   }
   
-  /* Custom scrollbar for dark theme */
+  /* Custom scrollbar - medical theme */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
   
   ::-webkit-scrollbar-track {
-    @apply bg-slate-900/50;
+    @apply bg-slate-100;
   }
   
   ::-webkit-scrollbar-thumb {
-    @apply bg-slate-700 rounded-full;
+    @apply bg-slate-300 rounded-full;
   }
   
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-slate-600;
+    @apply bg-slate-400;
   }
   
   /* Smooth scrolling */
@@ -143,9 +143,9 @@
     scroll-behavior: smooth;
   }
   
-  /* Selection color */
+  /* Selection color - medical blue */
   ::selection {
-    @apply bg-violet-600/30 text-violet-200;
+    @apply bg-blue-200 text-slate-800;
   }
 }
 

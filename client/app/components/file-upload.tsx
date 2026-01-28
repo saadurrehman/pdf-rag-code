@@ -42,7 +42,11 @@ const FileUploadComponent: React.FC = () => {
 
             const url = data.url ?? null;
             setUploadStatus('success');
-            setStatusMessage('Document uploaded successfully!');
+            setStatusMessage(
+              data.ingested
+                ? 'Report uploaded. It’s being processed so your care team can read it — try asking about it in chat in a few seconds.'
+                : 'Document uploaded successfully!'
+            );
             setUploadedUrl(url);
 
             setTimeout(() => {
@@ -73,55 +77,49 @@ const FileUploadComponent: React.FC = () => {
   return (
     <div className="w-full">
       <div className="mb-6">
-        <h2 className="text-xl font-bold text-slate-200 mb-2">Document Upload</h2>
-        <p className="text-sm text-slate-400">Upload your PDF to start analyzing with AI</p>
+        <h2 className="text-xl font-bold text-slate-800 mb-2">Document Upload</h2>
+        <p className="text-sm text-slate-500">Upload your PDF to use as context for your care team</p>
       </div>
 
       <div 
         onClick={!uploading ? handleFileUploadButtonClick : undefined}
         className={`relative group ${uploading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
       >
-        {/* Animated gradient border */}
-        <div className="absolute -inset-0.5 bg-gradient-to-r from-violet-600 to-cyan-600 rounded-2xl blur opacity-30 group-hover:opacity-50 transition duration-300"></div>
-        
-        {/* Main upload box */}
-        <div className={`relative bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-8 transition-all duration-300 ${
-          uploading ? 'opacity-60' : 'group-hover:bg-slate-800/70 group-hover:border-slate-600/50 group-hover:scale-[1.02]'
+        {/* Main upload box - medical professional style */}
+        <div className={`relative bg-white border-2 border-dashed border-slate-200 rounded-2xl p-8 transition-all duration-200 ${
+          uploading ? 'opacity-60 border-slate-300' : 'group-hover:border-blue-300 group-hover:bg-blue-50/30'
         }`}>
           <div className="flex flex-col items-center justify-center space-y-4">
             {/* Icon */}
-            <div className="relative">
-              <div className={`absolute inset-0 bg-gradient-to-r from-violet-600 to-cyan-600 rounded-2xl blur-lg opacity-50 ${uploading ? 'animate-pulse' : 'group-hover:opacity-75'} transition-opacity`}></div>
-              <div className="relative bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-700/50">
-                {uploading ? (
-                  <Loader2 className="w-12 h-12 text-violet-400 animate-spin" />
-                ) : uploadStatus === 'success' ? (
-                  <FileCheck className="w-12 h-12 text-green-400" />
-                ) : uploadStatus === 'error' ? (
-                  <AlertCircle className="w-12 h-12 text-red-400" />
-                ) : (
-                  <Upload className="w-12 h-12 text-cyan-400 group-hover:text-cyan-300 transition-colors" />
-                )}
-              </div>
+            <div className="relative bg-slate-100 group-hover:bg-blue-50 p-6 rounded-2xl border border-slate-200 transition-colors">
+              {uploading ? (
+                <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
+              ) : uploadStatus === 'success' ? (
+                <FileCheck className="w-12 h-12 text-emerald-600" />
+              ) : uploadStatus === 'error' ? (
+                <AlertCircle className="w-12 h-12 text-red-600" />
+              ) : (
+                <Upload className="w-12 h-12 text-blue-600 group-hover:text-blue-700 transition-colors" />
+              )}
             </div>
 
             {/* Text content */}
             <div className="text-center space-y-2">
-              <h3 className="text-lg font-semibold text-slate-200">
+              <h3 className="text-lg font-semibold text-slate-800">
                 {uploading ? 'Uploading...' : uploadStatus === 'success' ? 'Success!' : uploadStatus === 'error' ? 'Error' : 'Click to Upload PDF'}
               </h3>
               
               {fileName && (
-                <p className="text-sm text-slate-400 font-mono bg-slate-900/50 px-3 py-1 rounded-lg border border-slate-700/50 max-w-[250px] truncate">
+                <p className="text-sm text-slate-600 font-mono bg-slate-100 px-3 py-1 rounded-lg border border-slate-200 max-w-[250px] truncate">
                   {fileName}
                 </p>
               )}
               
               {statusMessage && (
                 <p className={`text-sm font-medium ${
-                  uploadStatus === 'success' ? 'text-green-400' : 
-                  uploadStatus === 'error' ? 'text-red-400' : 
-                  'text-cyan-400'
+                  uploadStatus === 'success' ? 'text-emerald-600' : 
+                  uploadStatus === 'error' ? 'text-red-600' : 
+                  'text-blue-600'
                 }`}>
                   {statusMessage}
                 </p>
@@ -132,7 +130,7 @@ const FileUploadComponent: React.FC = () => {
                   href={uploadedUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 font-mono bg-slate-900/70 px-3 py-2 rounded-lg border border-slate-700/50 truncate max-w-full"
+                  className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-mono bg-blue-50 px-3 py-2 rounded-lg border border-blue-100 truncate max-w-full"
                 >
                   <ExternalLink className="w-4 h-4 flex-shrink-0" />
                   <span className="truncate">{uploadedUrl}</span>
@@ -149,9 +147,9 @@ const FileUploadComponent: React.FC = () => {
             {/* Upload hint */}
             {!uploading && uploadStatus === 'idle' && (
               <div className="flex items-center gap-2 pt-2">
-                <div className="h-px flex-1 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
-                <span className="text-xs text-slate-600 font-medium">PDF files only</span>
-                <div className="h-px flex-1 bg-gradient-to-r from-transparent via-slate-700 to-transparent"></div>
+                <div className="h-px flex-1 bg-slate-200"></div>
+                <span className="text-xs text-slate-400 font-medium">PDF files only</span>
+                <div className="h-px flex-1 bg-slate-200"></div>
               </div>
             )}
           </div>
@@ -160,14 +158,14 @@ const FileUploadComponent: React.FC = () => {
 
       {/* Info cards */}
       <div className="mt-6 grid grid-cols-1 gap-3">
-        <div className="bg-slate-800/30 backdrop-blur-sm border border-slate-700/30 rounded-xl p-4">
+        <div className="bg-blue-50/80 border border-blue-100 rounded-xl p-4">
           <div className="flex items-start gap-3">
-            <div className="p-2 bg-violet-500/10 rounded-lg">
-              <Zap className="w-4 h-4 text-violet-400" />
+            <div className="p-2 bg-blue-100 rounded-lg">
+              <Zap className="w-4 h-4 text-blue-600" />
             </div>
             <div>
-              <h4 className="text-sm font-semibold text-slate-300 mb-1">AI Processing</h4>
-              <p className="text-xs text-slate-500">Documents are analyzed using advanced AI models</p>
+              <h4 className="text-sm font-semibold text-slate-800 mb-1">Report processing</h4>
+              <p className="text-xs text-slate-600">Uploaded reports are processed so Dentist, Physiotherapist, and Nutrition assistants can read and answer from them.</p>
             </div>
           </div>
         </div>

@@ -14,16 +14,50 @@ interface Doc {
     source?: string;
   };
 }
-interface IMessage {
+export interface IMessage {
   role: 'assistant' | 'user';
   content?: string;
   documents?: Doc[];
 }
 
-const ChatComponent: React.FC = () => {
+export type ChatBotType = 'dentist' | 'physiotherapist' | 'nutrition';
+
+export type MessagesUpdate = IMessage[] | ((prev: IMessage[]) => IMessage[]);
+
+interface ChatComponentProps {
+  bot?: ChatBotType;
+  messages?: IMessage[];
+  onMessagesChange?: (update: MessagesUpdate) => void;
+}
+
+const BOT_LABELS: Record<ChatBotType, { title: string; subtitle: string; emptyHint: string; placeholder: string }> = {
+  dentist: { title: 'Dentist', subtitle: 'Oral health & dental care — use your PDFs for context', emptyHint: 'Upload PDFs and ask about teeth, gums, oral health, or dental care', placeholder: 'Ask about oral health, dental care, or your documents...' },
+  physiotherapist: { title: 'Physiotherapist', subtitle: 'Movement & rehabilitation — use your PDFs for context', emptyHint: 'Upload PDFs and ask about movement, exercises, pain, or rehabilitation', placeholder: 'Ask about movement, exercises, or your documents...' },
+  nutrition: { title: 'Nutrition Doctor', subtitle: 'Diet & nutrition — use your PDFs for context', emptyHint: 'Upload PDFs and ask about diet, nutrients, meals, or nutrition', placeholder: 'Ask about diet, nutrition, or your documents...' },
+};
+
+const EMPTY_MESSAGES: IMessage[] = [];
+
+const ChatComponent: React.FC<ChatComponentProps> = ({ bot = 'dentist', messages: controlledMessages, onMessagesChange }) => {
   const [message, setMessage] = React.useState<string>('');
-  const [messages, setMessages] = React.useState<IMessage[]>([]);
+  const [internalMessages, setInternalMessages] = React.useState<IMessage[]>([]);
+  const isControlled = onMessagesChange != null;
+  const messages = React.useMemo(
+    () => (isControlled ? (controlledMessages ?? EMPTY_MESSAGES) : internalMessages),
+    [isControlled, controlledMessages, internalMessages]
+  );
+  const setMessages = React.useCallback(
+    (update: MessagesUpdate) => {
+      if (onMessagesChange) {
+        onMessagesChange(update);
+      } else {
+        setInternalMessages((prev) => (typeof update === 'function' ? update(prev) : update));
+      }
+    },
+    [onMessagesChange]
+  );
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  const labels = BOT_LABELS[bot];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -45,7 +79,7 @@ const ChatComponent: React.FC = () => {
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
     
     try {
-      const res = await fetch(`http://localhost:8000/api/chat?message=${encodeURIComponent(userMessage)}`);
+      const res = await fetch(`http://localhost:8000/api/chat?message=${encodeURIComponent(userMessage)}&bot=${encodeURIComponent(bot)}`);
       
       // Check if response is streaming
       const contentType = res.headers.get('content-type');
@@ -198,37 +232,29 @@ const ChatComponent: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Chat Header */}
-      <div className="px-6 py-4 border-b border-slate-800/50 bg-slate-900/30 backdrop-blur-sm">
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
+      {/* Chat Header - fixed */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-slate-200 bg-white shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="relative">
-            <div className="absolute inset-0 bg-gradient-to-r from-violet-600 to-cyan-600 rounded-lg blur opacity-50"></div>
-            <div className="relative bg-gradient-to-r from-violet-600 to-cyan-600 p-2 rounded-lg">
-              <Bot className="w-5 h-5 text-white" />
-            </div>
+          <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-blue-600">
+            <Bot className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-slate-200">AI Assistant</h2>
-            <p className="text-xs text-slate-400">Ask questions about your documents</p>
+            <h2 className="text-lg font-bold text-slate-800">{labels.title}</h2>
+            <p className="text-xs text-slate-500">{labels.subtitle}</p>
           </div>
         </div>
       </div>
 
-      {/* Messages Container */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      {/* Messages Container - only this part scrolls */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6 bg-slate-50/50">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
-            <div className="relative">
-              <div className="absolute inset-0 bg-gradient-to-r from-violet-600/20 to-cyan-600/20 rounded-full blur-2xl"></div>
-              <div className="relative bg-slate-800/50 backdrop-blur-sm p-8 rounded-2xl border border-slate-700/50">
-                <Sparkles className="w-12 h-12 text-cyan-400 mx-auto mb-4" />
-              </div>
-            </div>
-            <div>
-              <h3 className="text-xl font-bold text-slate-200 mb-2">Start a conversation</h3>
-              <p className="text-slate-400 max-w-md">
-                Upload a PDF document and ask questions to get AI-powered insights
+            <div className="relative bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+              <Sparkles className="w-12 h-12 text-teal-600 mx-auto mb-4" />
+              <h3 className="text-xl font-bold text-slate-800 mb-2">Start a conversation</h3>
+              <p className="text-slate-500 max-w-md">
+                {labels.emptyHint}
               </p>
             </div>
           </div>
@@ -247,9 +273,9 @@ const ChatComponent: React.FC = () => {
                 }`}>
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
                     message.role === 'user'
-                      ? 'bg-gradient-to-br from-violet-600 to-violet-700'
-                      : 'bg-gradient-to-br from-cyan-600 to-cyan-700'
-                  } shadow-lg`}>
+                      ? 'bg-blue-600'
+                      : 'bg-teal-600'
+                  } shadow-sm`}>
                     {message.role === 'user' ? (
                       <User className="w-5 h-5 text-white" />
                     ) : (
@@ -262,31 +288,31 @@ const ChatComponent: React.FC = () => {
                 <div className={`flex-1 ${message.role === 'user' ? 'order-1' : 'order-2'}`}>
                   <div className={`rounded-2xl p-5 ${
                     message.role === 'user'
-                      ? 'bg-gradient-to-br from-violet-600/20 to-violet-700/20 border border-violet-500/30 ml-auto max-w-[85%]'
-                      : 'bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 mr-auto max-w-[85%]'
-                  } shadow-xl`}>
+                      ? 'bg-blue-50 border border-blue-100 ml-auto max-w-[85%]'
+                      : 'bg-white border border-slate-200 shadow-sm mr-auto max-w-[85%]'
+                  }`}>
                     <div className={`flex items-center gap-2 mb-2 ${
                       message.role === 'user' ? 'justify-end' : 'justify-start'
                     }`}>
                       <span className={`text-xs font-semibold ${
-                        message.role === 'user' ? 'text-violet-300' : 'text-cyan-300'
+                        message.role === 'user' ? 'text-blue-700' : 'text-teal-700'
                       }`}>
-                        {message.role === 'user' ? 'You' : 'AI Assistant'}
+                        {message.role === 'user' ? 'You' : labels.title}
                       </span>
                     </div>
                     <div className={`whitespace-pre-wrap text-sm leading-relaxed ${
-                      message.role === 'user' ? 'text-slate-100' : 'text-slate-200'
+                      message.role === 'user' ? 'text-slate-800' : 'text-slate-700'
                     }`}>
                       {message.content || (
-                        <span className="flex items-center gap-2 text-slate-400">
+                        <span className="flex items-center gap-2 text-slate-500">
                           <Loader2 className="w-4 h-4 animate-spin" />
                           Thinking...
                         </span>
                       )}
                     </div>
                     {message.documents && message.documents.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-slate-700/50">
-                        <div className="flex items-center gap-2 text-xs text-cyan-400">
+                      <div className="mt-3 pt-3 border-t border-slate-100">
+                        <div className="flex items-center gap-2 text-xs text-teal-600">
                           <FileText className="w-3.5 h-3.5" />
                           <span>Found {message.documents.length} relevant document{message.documents.length > 1 ? 's' : ''}</span>
                         </div>
@@ -301,12 +327,11 @@ const ChatComponent: React.FC = () => {
         )}
       </div>
 
-      {/* Input Area */}
-      <div className="px-6 py-4 border-t border-slate-800/50 bg-slate-900/30 backdrop-blur-sm">
+      {/* Input Area - fixed */}
+      <div className="flex-shrink-0 px-6 py-4 border-t border-slate-200 bg-white">
         <div className="max-w-4xl mx-auto">
           <div className="flex gap-3 items-end">
-            <div className="flex-1 relative">
-              <div className="absolute inset-0 bg-gradient-to-r from-violet-600/20 to-cyan-600/20 rounded-xl blur opacity-50"></div>
+            <div className="flex-1">
               <Input
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
@@ -316,14 +341,14 @@ const ChatComponent: React.FC = () => {
                     handleSendChatMessage();
                   }
                 }}
-                placeholder="Ask a question about your documents..."
-                className="relative bg-slate-800/50 backdrop-blur-sm border-slate-700/50 text-slate-200 placeholder:text-slate-500 focus:border-violet-500/50 focus:ring-violet-500/20 rounded-xl px-4 py-3 pr-12"
+                placeholder={labels.placeholder}
+                className="bg-slate-50 border-slate-200 text-slate-800 placeholder:text-slate-400 focus:border-blue-400 focus:ring-blue-400/20 rounded-xl px-4 py-3 pr-12"
               />
             </div>
             <Button 
               onClick={handleSendChatMessage} 
               disabled={!message.trim()}
-              className="bg-gradient-to-r from-violet-600 to-cyan-600 hover:from-violet-500 hover:to-cyan-500 text-white border-0 rounded-xl px-6 py-3 h-auto shadow-lg shadow-violet-500/25 hover:shadow-xl hover:shadow-violet-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 hover:scale-105"
+              className="bg-blue-600 hover:bg-blue-700 text-white border-0 rounded-xl px-6 py-3 h-auto shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
             >
               <Send className="w-4 h-4" />
             </Button>
